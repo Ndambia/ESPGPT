@@ -10,6 +10,7 @@ class OpenAIClient {
 private:
   const char* host = "api.openai.com";
   const int port = 443;
+  const char* whisperEndpoint = "/v1/audio/transcriptions";
   
   // Simple LRU cache for responses
   struct CacheEntry {
@@ -87,6 +88,121 @@ public:
     }
     
     return response;
+  }
+  
+  // Transcribe audio using Whisper API
+  String transcribeAudio(uint8_t* audioData, size_t audioSize) {
+    WiFiClientSecure client;
+    client.setInsecure();  // Note: In production, use proper certificate validation
+    
+    Serial.println("Connecting to OpenAI Whisper API...");
+    
+    // Connection with timeout
+    unsigned long connectionStart = millis();
+    while (!client.connect(host, port)) {
+      if (millis() - connectionStart > 10000) {
+        return "Error: Connection timeout";
+      }
+      delay(100);
+    }
+    
+    Serial.println("Connected to Whisper API");
+    
+    // Generate a boundary for multipart form data
+    String boundary = "ESP32AudioBoundary";
+    
+    // Create multipart form data
+    String header = "--" + boundary + "\r\n";
+    header += "Content-Disposition: form-data; name=\"file\"; filename=\"audio.webm\"\r\n";
+    header += "Content-Type: audio/webm\r\n\r\n";
+    
+    String footer = "\r\n--" + boundary + "\r\n";
+    footer += "Content-Disposition: form-data; name=\"model\"\r\n\r\n";
+    footer += "whisper-1\r\n";
+    footer += "--" + boundary + "--\r\n";
+    
+    // Calculate content length
+    size_t contentLength = header.length() + audioSize + footer.length();
+    
+    // Create HTTP request
+    String request =
+      "POST " + String(whisperEndpoint) + " HTTP/1.1\r\n" +
+      "Host: " + String(host) + "\r\n" +
+      "Authorization: Bearer " + OPENAI_API_KEY + "\r\n" +
+      "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n" +
+      "Content-Length: " + String(contentLength) + "\r\n\r\n";
+    
+    // Send request headers
+    client.print(request);
+    
+    // Send multipart form data header
+    client.print(header);
+    
+    // Send audio data in chunks
+    const size_t chunkSize = 1024;
+    for (size_t i = 0; i < audioSize; i += chunkSize) {
+      size_t bytesToSend = min(chunkSize, audioSize - i);
+      client.write(audioData + i, bytesToSend);
+      yield(); // Allow ESP32 to handle background tasks
+    }
+    
+    // Send multipart form data footer
+    client.print(footer);
+    
+    // Read response with timeout
+    String response = "";
+    unsigned long timeout = millis();
+    bool headerComplete = false;
+    
+    while (client.connected() || client.available()) {
+      if (client.available()) {
+        String line = client.readStringUntil('\n');
+        
+        // Skip headers until we find an empty line
+        if (!headerComplete) {
+          if (line == "\r") {
+            headerComplete = true;
+          }
+          continue;
+        }
+        
+        response += line;
+        timeout = millis();
+      }
+      
+      if (millis() - timeout > 15000) {
+        Serial.println("Response timeout");
+        break;
+      }
+      
+      // Small delay to allow data to arrive
+      delay(10);
+    }
+    
+    // Parse JSON response
+    int jsonStart = response.indexOf('{');
+    if (jsonStart == -1) {
+      return "Error: Invalid response format";
+    }
+    
+    String jsonBody = response.substring(jsonStart);
+    
+    JsonDocument resDoc;
+    DeserializationError error = deserializeJson(resDoc, jsonBody);
+    
+    if (error) {
+      return "Error: JSON parsing failed - " + String(error.c_str());
+    }
+    
+    // Extract the transcription text
+    if (resDoc["error"].is<JsonObject>()) {
+      return "Error: " + String(resDoc["error"]["message"].as<const char*>());
+    }
+    
+    String result = resDoc["text"] | "No transcription";
+    result.trim();
+    
+    return result;
   }
 
 private:

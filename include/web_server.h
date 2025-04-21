@@ -134,7 +134,7 @@ private:
       box-shadow: 0 0 0 2px rgba(187,134,252,0.3);
     }
     
-    #send-btn {
+    #send-btn, #mic-btn {
       background-color: var(--primary-color);
       color: var(--on-primary);
       border: none;
@@ -147,13 +147,41 @@ private:
       transition: all 0.2s ease;
     }
     
-    #send-btn:hover {
+    #mic-btn {
+      padding: 12px 16px;
+      background-color: var(--secondary-dark);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 48px;
+      min-height: 48px;
+      z-index: 10;
+      /* Make sure the button is visible by default */
+      display: inline-flex;
+    }
+    
+    #mic-btn.recording {
+      background-color: var(--error);
+      animation: pulse 1.5s infinite;
+    }
+    
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.6; }
+      100% { opacity: 1; }
+    }
+    
+    #send-btn:hover, #mic-btn:hover {
       background-color: var(--primary-dark);
       transform: translateY(-2px);
       box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
     
-    #send-btn:disabled {
+    #mic-btn:hover {
+      background-color: var(--secondary-color);
+    }
+    
+    #send-btn:disabled, #mic-btn:disabled {
       background-color: rgba(98, 0, 238, 0.3);
       cursor: not-allowed;
       transform: none;
@@ -306,6 +334,7 @@ private:
       </div>
       <div class="input-area">
         <input id="question" type="text" placeholder="Ask me anything..." />
+        <button id="mic-btn" onclick="toggleRecording()" title="Voice Input" style="display:inline-flex;"><i class="mic-icon">🎤</i></button>
         <button id="send-btn" onclick="ask()">Send</button>
       </div>
     </div>
@@ -317,6 +346,9 @@ private:
   <script>
     // Keep chat history
     let chatHistory = [];
+    let mediaRecorder;
+    let audioChunks = [];
+    let isRecording = false;
     
     // Language detection patterns
     const codePatterns = {
@@ -332,7 +364,19 @@ private:
     
     // Add system message on load
     window.onload = function() {
-      addToHistory('system', 'Welcome! Ask me anything about programming, ESP32, or AI. I can show code examples with syntax highlighting.');
+      addToHistory('system', 'Welcome! Ask me anything about programming, ESP32, or AI. I can show code examples with syntax highlighting or use the microphone button for voice input.');
+      
+      // Check if browser supports audio recording
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        console.log("Browser supports audio recording");
+        // Always show the microphone button
+        document.getElementById('mic-btn').style.display = 'inline-flex';
+      } else {
+        console.log("Browser does NOT support audio recording");
+        // Show the button but disable it
+        document.getElementById('mic-btn').disabled = true;
+        document.getElementById('mic-btn').title = "Voice input not supported in this browser";
+      }
     };
     
     async function ask() {
@@ -493,8 +537,122 @@ private:
       }
     });
     
+    // Voice input functionality
+    const micButton = document.getElementById('mic-btn');
+    
+    // Check if browser supports audio recording
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      console.log("Browser supports audio recording");
+      // We'll use the onclick attribute directly on the button instead
+      // micButton.addEventListener('click', toggleRecording);
+    } else {
+      console.log("Browser does NOT support audio recording");
+      micButton.disabled = true;
+      micButton.title = "Voice input not supported in this browser";
+    }
+    
+    // Global function for the onclick attribute
+    window.toggleRecording = async function() {
+      console.log("toggleRecording called, isRecording:", isRecording);
+      if (!isRecording) {
+        // Start recording
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream);
+          audioChunks = [];
+          
+          mediaRecorder.addEventListener("dataavailable", event => {
+            audioChunks.push(event.data);
+          });
+          
+          mediaRecorder.addEventListener("stop", async () => {
+            // Create audio blob from chunks
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            
+            // Show loading indicator
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('send-btn').disabled = true;
+            micButton.disabled = true;
+            
+            try {
+              // Add a "Transcribing..." message
+              addToHistory('system', 'Transcribing your voice...');
+              
+              // Convert blob to array buffer
+              const arrayBuffer = await audioBlob.arrayBuffer();
+              const uint8Array = new Uint8Array(arrayBuffer);
+              
+              // Send audio to ESP32 for transcription
+              const response = await fetch("/transcribe_audio", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/octet-stream"
+                },
+                body: uint8Array
+              });
+              
+              if (!response.ok) {
+                throw new Error(`Transcription failed: ${response.status}`);
+              }
+              
+              const result = await response.json();
+              
+              if (result.error) {
+                throw new Error(result.error);
+              }
+              
+              const transcription = result.transcription;
+              
+              // Display transcription as user message
+              addToHistory('user', transcription);
+              
+              // Send transcription to ESP32 for processing
+              const res = await fetch("/receive_transcription", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "text/plain"
+                },
+                body: transcription
+              });
+              
+              if (!res.ok) {
+                throw new Error(`HTTP error! status: ${res.status}`);
+              }
+              
+              const aiResult = await res.json();
+              addToHistory('assistant', aiResult.response);
+              
+            } catch (err) {
+              addToHistory('system', "Error: " + err.message);
+            } finally {
+              document.getElementById('loading').classList.add('hidden');
+              document.getElementById('send-btn').disabled = false;
+              micButton.disabled = false;
+            }
+          });
+          
+          mediaRecorder.start();
+          isRecording = true;
+          micButton.classList.add('recording');
+          micButton.title = "Stop recording";
+          
+        } catch (err) {
+          addToHistory('system', "Error accessing microphone: " + err.message);
+        }
+      } else {
+        // Stop recording
+        mediaRecorder.stop();
+        isRecording = false;
+        micButton.classList.remove('recording');
+        micButton.title = "Voice Input";
+        
+        // Stop all audio tracks
+        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      }
+    }
+    
     function showInfo() {
-      addToHistory('system', 'ESP32 AI Assistant v2.0 - Enhanced with code highlighting and a modern UI. Ask me about programming, ESP32 features, or AI topics!');
+      addToHistory('system', 'ESP32 AI Assistant v2.0 - Enhanced with code highlighting, voice input, and a modern UI. Ask me about programming, ESP32 features, or AI topics!');
     }
   </script>
 </body>
@@ -502,7 +660,7 @@ private:
 )rawliteral";
 
 public:
-  AIWebServer(int port, KnowledgeBase& knowledgeBase, OpenAIClient& aiClient) 
+  AIWebServer(int port, KnowledgeBase& knowledgeBase, OpenAIClient& aiClient)
     : server(port), kb(knowledgeBase), ai(aiClient) {}
   
   void begin() {
@@ -515,9 +673,22 @@ public:
       handleAsk();
     });
     
+    server.on("/receive_transcription", HTTP_POST, [this]() {
+      handleTranscription();
+    });
+    
+    server.on("/transcribe_audio", HTTP_POST, [this]() {
+      handleTranscribeAudio();
+    });
+    
+    // Voice command endpoint
+    server.on("/voice_command", HTTP_GET, [this]() {
+      server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Voice command received\"}");
+    });
+    
     // Start server
     server.begin();
-    Serial.println("Web server started on port 80");
+    Serial.println("Web server started on port " + String(WEB_SERVER_PORT));
   }
   
   void handleClient() {
@@ -558,6 +729,80 @@ private:
     // Send response
     server.send(200, "text/plain", answer);
   }
+  
+  void handleTranscription() {
+    if (!server.hasArg("plain")) {
+      server.send(400, "text/plain", "Missing transcription data");
+      return;
+    }
+    
+    String transcription = server.arg("plain");
+    Serial.println("Received transcription: " + transcription);
+    
+    // Process the transcription the same way as a regular question
+    // Get context from knowledge base
+    String context = kb.getBestMatch(transcription);
+    Serial.println("Context: " + context);
+    
+    // Create prompt with context and instructions for code formatting
+    String prompt = "Context information: " + context + "\n\n"
+                   "Question: " + transcription + "\n\n"
+                   "When providing code examples, please format them using markdown code blocks with language specifiers, like:\n"
+                   "```javascript\n// Your JavaScript code here\n```\n"
+                   "```cpp\n// Your C++ code here\n```\n"
+                   "For inline code, use backticks like `this`.\n\n"
+                   "Answer:";
+    
+    // Get response from OpenAI
+    String answer = ai.getResponse(prompt);
+    Serial.println("Answer: " + answer);
+    
+    // Send response
+    server.send(200, "application/json", "{\"response\":\"" + answer + "\"}");
+  }
+  
+  void handleTranscribeAudio() {
+    if (!server.hasArg("plain")) {
+      server.send(400, "application/json", "{\"error\":\"No audio data received\"}");
+      return;
+    }
+    
+    // Get audio data from request
+    String audioDataStr = server.arg("plain");
+    size_t audioSize = audioDataStr.length();
+    
+    if (audioSize == 0) {
+      server.send(400, "application/json", "{\"error\":\"Empty audio data\"}");
+      return;
+    }
+    
+    Serial.println("Received audio data of size: " + String(audioSize) + " bytes");
+    
+    // Convert String to uint8_t array
+    uint8_t* audioData = new uint8_t[audioSize];
+    if (!audioData) {
+      server.send(500, "application/json", "{\"error\":\"Memory allocation failed\"}");
+      return;
+    }
+    
+    memcpy(audioData, audioDataStr.c_str(), audioSize);
+    
+    // Transcribe audio using OpenAI Whisper API
+    String transcription = ai.transcribeAudio(audioData, audioSize);
+    
+    // Free memory
+    delete[] audioData;
+    
+    if (transcription.startsWith("Error:")) {
+      server.send(500, "application/json", "{\"error\":\"" + transcription + "\"}");
+      return;
+    }
+    
+    // Send transcription back to client
+    String jsonResponse = "{\"transcription\":\"" + transcription + "\"}";
+    server.send(200, "application/json", jsonResponse);
+  }
+  
 };
 
 #endif
