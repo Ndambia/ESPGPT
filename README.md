@@ -104,7 +104,7 @@ After the initial setup, you can update the firmware wirelessly using either:
 1. **PlatformIO IDE**: Simply click the upload button, and it will use the OTA configuration
 2. **Command Line**: Run `pio run -t upload`
 3. **Manual Command**: Use `pio run -t upload --upload-port [ESP-IP-ADDRESS] --upload-flags="--auth=admin"`
-4. **PowerShell**: & "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run -t upload --upload-port 192.168.0.100
+4. **PowerShell**:` & "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run -t upload --upload-port 192.168.0.100`
 
 ### Troubleshooting OTA Updates
 
