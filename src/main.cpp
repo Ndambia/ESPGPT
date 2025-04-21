@@ -60,7 +60,7 @@ void setupOTA() {
   ArduinoOTA.setHostname(hostname.c_str());
   
   // IMPORTANT: Change this password in production environments!
-  //ArduinoOTA.setPassword("admin");
+  ArduinoOTA.setPassword("admin");
   
   // Optional: Change port (default is 3232)
   // ArduinoOTA.setPort(8266);
